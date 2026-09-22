@@ -1,0 +1,122 @@
+name: Build Yuhuo Shop
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Server platform
+        required: true
+        default: linux/amd64
+        type: choice
+        options:
+          - linux/amd64
+          - linux/arm64
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Download fixed source version
+        uses: actions/checkout@v4
+        with:
+          repository: dujiao-next/dujiao-next
+          ref: d2e44618de03068cbbe874a23a6d7c6a249a79ec
+          persist-credentials: false
+
+      - name: Add read-only affiliate rules
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("frontend/user/src/views/personal/AffiliatePanel.vue")
+          text = p.read_text(encoding="utf-8")
+          anchor = '      <template v-else-if="dashboard?.opened">'
+
+          if text.count(anchor) != 1:
+              raise SystemExit("Unexpected page structure; stopped")
+
+          block = """
+                  <!-- yuhuo-affiliate-rules -->
+                  <section
+                    v-if="appStore.config?.affiliate"
+                    class="mb-5 rounded-xl border bg-muted/30 p-4"
+                    aria-label="推广返利规则"
+                  >
+                    <h3 class="text-base font-semibold">推广返利规则</h3>
+                    <dl class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <dt class="text-sm text-muted-foreground">当前返利比例</dt>
+                        <dd class="mt-1 font-semibold">
+                          {{ appStore.config.affiliate.commission_rate }}%
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-sm text-muted-foreground">佣金确认时间</dt>
+                        <dd class="mt-1">
+                          从订单支付成功起计算：
+                          {{ appStore.config.affiliate.confirm_days }}天
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-sm text-muted-foreground">最低提现金额</dt>
+                        <dd class="mt-1">
+                          {{ appStore.config.affiliate.min_withdraw_amount }}
+                          （与佣金账户币种一致）
+                        </dd>
+                      </div>
+                      <div>
+                        <dt class="text-sm text-muted-foreground">提现渠道</dt>
+                        <dd class="mt-1">
+                          {{ appStore.config.affiliate.withdraw_channels?.length
+                            ? appStore.config.affiliate.withdraw_channels.join('、')
+                            : '未限定渠道，请先联系客服确认收款方式' }}
+                        </dd>
+                      </div>
+                    </dl>
+                  </section>
+          """
+
+          p.write_text(
+              text.replace(anchor, anchor + "\n" + block, 1),
+              encoding="utf-8"
+          )
+          print("Read-only affiliate rules added")
+          PY
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ inputs.platform }}
+          load: true
+          tags: yuhuo-shop:affiliate-rules-v1
+          build-args: |
+            APP_VERSION=v1.4.8-yuhuo-affiliate1
+
+      - name: Export image
+        shell: bash
+        run: |
+          docker save yuhuo-shop:affiliate-rules-v1 | gzip > yuhuo-shop-image.tar.gz
+          sha256sum yuhuo-shop-image.tar.gz > SHA256SUMS
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuhuo-shop-image
+          path: |
+            yuhuo-shop-image.tar.gz
+            SHA256SUMS
+          compression-level: 0
+          retention-days: 7
